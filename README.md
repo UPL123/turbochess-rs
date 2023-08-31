@@ -1,13 +1,13 @@
 # TurboChess library
 
-TurboChess is a fast move generator for chess that is situable for use in a chess engine. It supports:
+TurboChess is a chess move generator. It supports:
 
 * PEXT bitboards (emulated)
 * Make and Undo Position
 * Zobrist hashing
 * FEN support
 
-To get started, create a new Position and now you can work with legal moves
+To get started, create a new [Position](https://docs.rs/turbochess/0.1.0/turbochess/struct.Position.html) and now you can work with legal moves
 
 ## Example 1: Get the count of legal moves
 
@@ -54,8 +54,6 @@ println!("{pos}");
 println!("New FEN: {}", pos.fen());
 ```
 
-There is also a built in binary to run tests with TurboChess, such as perft, divide, complete perft and list.
-
 ## Contribute to TurboChess
 
-Actually, TurboChess probably has performance issues that can be fixed to be faster. There may be error in the code that can be fixed. If you find some of these errors, please raise an issue.
+Actually, TurboChess probably has performance issues and errors that can be fixed to be faster and accurate. If you find some of these errors, please raise an issue. Thanks!

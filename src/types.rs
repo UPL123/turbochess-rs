@@ -1,6 +1,7 @@
 use core::iter::Rev;
 use std::{fmt, ops::Neg};
 
+/// Represents a move
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Move(u16);
 
@@ -26,19 +27,35 @@ impl Move {
     const TO_MASK: u16 = 0b0000111111000000;
     const FLAG_MASK: u16 = 0b1111000000000000;
 
+    /// Creates a new move
     pub fn new(from: usize, to: usize, flag: usize) -> Self {
         Self((from | to << 6 | flag << 12) as u16)
     }
+
+    /// Gets the start square of the move
     pub fn from(&self) -> usize {
         (self.0 & Self::FROM_MASK) as usize
     }
 
+    /// Gets the destination square of the move
     pub fn to(&self) -> usize {
         ((self.0 & Self::TO_MASK) >> 6) as usize
     }
 
+    /// Gets the flag of the move
     pub fn flag(&self) -> usize {
         ((self.0 & Self::FLAG_MASK) >> 12) as usize
+    }
+
+    /// Checks that the move is a capture
+    pub fn is_capture(&self) -> bool {
+        let flag = self.flag();
+        flag == Move::CAPTURE
+            || flag == Move::EN_PASSANT
+            || flag == Move::PC_B
+            || flag == Move::PC_N
+            || flag == Move::PC_R
+            || flag == Move::PC_Q
     }
 }
 
@@ -49,109 +66,25 @@ impl fmt::Display for Move {
             "{}{}",
             Square::to_string(self.from()),
             Square::to_string(self.to())
-        );
+        )
+        .unwrap();
         if self.flag() == Move::PR_N || self.flag() == Move::PC_N {
-            write!(f, "n");
+            write!(f, "n").unwrap();
         }
         if self.flag() == Move::PR_B || self.flag() == Move::PC_B {
-            write!(f, "b");
+            write!(f, "b").unwrap();
         }
         if self.flag() == Move::PR_R || self.flag() == Move::PC_R {
-            write!(f, "r");
+            write!(f, "r").unwrap();
         }
         if self.flag() == Move::PR_Q || self.flag() == Move::PC_Q {
-            write!(f, "q");
+            write!(f, "q").unwrap();
         }
         Ok(())
     }
 }
-/*
-#[derive(Debug, Clone)]
-pub struct MoveList(Vec<Move>);
 
-impl MoveList {
-    pub fn new() -> Self {
-        Self(Vec::with_capacity(218))
-    }
-    pub fn add(&mut self, from: usize, to: usize, flag: usize) {
-        self.0.push(Move::new(from, to, flag));
-    }
-    pub fn extend(&mut self, from: usize, mut to: u64, flag: usize) {
-        while to != 0 {
-            let s = to.get_lsb().bit_scan();
-            self.add(from, s, flag);
-            to = to.pop_lsb();
-        }
-    }
-    pub fn add_promotions(&mut self, from: usize, to: usize, capture: bool) {
-        if capture {
-            self.0.push(Move::new(from, to, Move::PR_N));
-            self.0.push(Move::new(from, to, Move::PR_B));
-            self.0.push(Move::new(from, to, Move::PR_R));
-            self.0.push(Move::new(from, to, Move::PR_Q));
-        } else {
-            self.0.push(Move::new(from, to, Move::PC_N));
-            self.0.push(Move::new(from, to, Move::PC_B));
-            self.0.push(Move::new(from, to, Move::PC_R));
-            self.0.push(Move::new(from, to, Move::PC_Q));
-        }
-    }
-    pub fn extend_promotions(&mut self, from: usize, mut to: u64, capture: bool) {
-        while to != 0 {
-            let s = to.get_lsb().bit_scan();
-            self.add_promotions(from, s, capture);
-            to = to.pop_lsb();
-        }
-    }
-    pub fn count(self) -> usize {
-        self.0.len()
-    }
-    pub fn count_promotions(&self) -> usize {
-        let mut count = 0;
-        for m in &self.0 {
-            if m.flag() >= Move::PR_N && m.flag() <= Move::PC_Q {
-                count += 1;
-            }
-        }
-        count
-    }
-    pub fn count_captures(&self) -> usize {
-        let mut count = 0;
-        for m in &self.0 {
-            if m.flag() == Move::CAPTURE || (m.flag() >= Move::PC_N && m.flag() <= Move::PC_Q) {
-                count += 1;
-            }
-        }
-        count
-    }
-    pub fn count_enpassants(&self) -> usize {
-        let mut count = 0;
-        for m in &self.0 {
-            if m.flag() == Move::EN_PASSANT {
-                count += 1;
-            }
-        }
-        count
-    }
-    pub fn count_castles(&self) -> usize {
-        let mut count = 0;
-        for m in &self.0 {
-            if m.flag() == Move::CASTLE_00 || m.flag() == Move::CASTLE_000 {
-                count += 1;
-            }
-        }
-        count
-    }
-    pub fn rev(self) -> Rev<MoveListIterator> {
-        MoveListIterator {
-            list: self.clone(),
-            index: self.count(),
-        }
-        .rev()
-    }
-}
-*/
-
+/// Represents a list of moves
 #[derive(Debug, Copy, Clone)]
 pub struct MoveList {
     array: [Move; 218],
@@ -159,20 +92,24 @@ pub struct MoveList {
 }
 
 impl MoveList {
+    /// Creates a new MoveList
     pub fn new() -> Self {
         Self {
             array: [Move::EMPTY; 218],
             len: 0,
         }
     }
+    /// Adds a new move by putting its parameters
     pub fn add(&mut self, from: usize, to: usize, flag: usize) {
         self.array[self.len] = Move::new(from, to, flag);
         self.len += 1
     }
+    /// Adds a new move
     pub fn add_raw(&mut self, mv: Move) {
         self.array[self.len] = mv;
         self.len += 1
     }
+    /// Extends the movelist with a bitboard as destination from a square
     pub fn extend(&mut self, from: usize, mut to: u64, flag: usize) {
         while to != 0 {
             let s = to.get_lsb().bit_scan();
@@ -180,6 +117,7 @@ impl MoveList {
             to = to.pop_lsb();
         }
     }
+    /// Adds promotions
     pub fn add_promotions(&mut self, from: usize, to: usize, capture: bool) {
         if capture {
             self.add(from, to, Move::PC_N);
@@ -193,6 +131,7 @@ impl MoveList {
             self.add(from, to, Move::PR_Q);
         }
     }
+    /// Extends to promotions
     pub fn extend_promotions(&mut self, from: usize, mut to: u64, capture: bool) {
         while to != 0 {
             let s = to.get_lsb().bit_scan();
@@ -200,15 +139,18 @@ impl MoveList {
             to = to.pop_lsb();
         }
     }
+    /// Gets a move
     pub fn get(self, i: usize) -> Move {
         if i <= self.len {
             panic!("Out of bounds");
         }
         self.array[i]
     }
+    /// Gets the ammount of moves
     pub fn count(self) -> usize {
         self.len
     }
+    /// Counts all the promotions
     pub fn count_promotions(&self) -> usize {
         let mut count = 0;
         for m in &self.array {
@@ -221,6 +163,7 @@ impl MoveList {
         }
         count
     }
+    /// Counts all the captures
     pub fn count_captures(&self) -> usize {
         let mut count = 0;
         for m in &self.array {
@@ -233,6 +176,7 @@ impl MoveList {
         }
         count
     }
+    /// Counts all the en passants
     pub fn count_enpassants(&self) -> usize {
         let mut count = 0;
         for m in &self.array {
@@ -245,6 +189,7 @@ impl MoveList {
         }
         count
     }
+    /// Counts all the castles
     pub fn count_castles(&self) -> usize {
         let mut count = 0;
         for m in &self.array {
@@ -257,6 +202,7 @@ impl MoveList {
         }
         count
     }
+    /// Iterates over the move list in reverse
     pub fn rev(self) -> Rev<MoveListIterator> {
         MoveListIterator {
             list: self,
@@ -265,6 +211,7 @@ impl MoveList {
         }
         .rev()
     }
+    /// Filters all moves that are from a square
     pub fn filter_from(&mut self, from: usize) {
         let mut i = 0;
         let mut j = 0;
@@ -280,6 +227,7 @@ impl MoveList {
         }
         self.len = j;
     }
+    /// Filters all moves that are to a square
     pub fn filter_to(&mut self, to: usize) {
         let mut i = 0;
         let mut j = 0;
@@ -295,6 +243,7 @@ impl MoveList {
         }
         self.len = j;
     }
+    /// Filters all moves that are from a bitboard
     pub fn filter_from_bb(&mut self, from: u64) {
         let mut i = 0;
         let mut j = 0;
@@ -310,6 +259,7 @@ impl MoveList {
         }
         self.len = j;
     }
+    /// Filters all moves that are to a bitboard
     pub fn filter_to_bb(&mut self, to: u64) {
         let mut i = 0;
         let mut j = 0;
@@ -416,6 +366,7 @@ impl Piece {
     }
 }
 
+/// Represents a direction
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
 pub enum Direction {
@@ -459,11 +410,13 @@ impl Neg for Direction {
     }
 }
 impl Direction {
+    /// Gets the relative direction in the look of a specific color
     pub fn relative(self, color: usize) -> Self {
         return if color == Color::BLACK { -self } else { self };
     }
 }
 
+/// Represents helpers for bitboards
 pub struct BitBoard;
 
 impl BitBoard {
@@ -485,14 +438,7 @@ impl BitBoard {
     pub const RANK_7: u64 = 0xff000000000000;
     pub const RANK_8: u64 = 0xff00000000000000;
 
-    pub const EDGE: u64 = 18411139144890810879;
-    pub fn iter_subsets(bb: u64) -> BitBoardSubsetIter {
-        BitBoardSubsetIter {
-            set: bb,
-            subset: 0,
-            finished: false,
-        }
-    }
+    /// Prints a bitboard
     pub fn print(mut bb: u64) {
         println!("  +-----------------+");
         let mut rank = [0; 8];
@@ -511,7 +457,9 @@ impl BitBoard {
         }
         println!("  +-----------------+\n    a b c d e f g h");
     }
-    pub fn shift_dir(mut bb: u64, dir: Direction) -> u64 {
+
+    /// Shifts a bitboard into a direction
+    pub fn shift_dir(bb: u64, dir: Direction) -> u64 {
         return if dir == Direction::North {
             bb << 8
         } else if dir == Direction::South {
@@ -537,6 +485,7 @@ impl BitBoard {
         };
     }
 
+    /// Gets the relative rank in the look of a specific color
     pub fn relative_rank(rank: usize, color: usize) -> u64 {
         let num = if color == Color::WHITE {
             rank - 1
@@ -544,16 +493,6 @@ impl BitBoard {
             8 - rank
         };
         Self::RANK_1 << (num * 8)
-    }
-
-    pub fn popcnt(mut bb: u64) -> i32 {
-        let mut count = 0;
-        while bb != 0 {
-            count += 1;
-            bb &= bb - 1;
-        }
-
-        count
     }
 }
 
@@ -647,11 +586,14 @@ impl Square {
     pub const G8: usize = 62;
     pub const H8: usize = 63;
 
+    /// Gets a square from a string
     pub fn from_str(sq: &str) -> usize {
         let file = sq.chars().nth(0).unwrap().to_ascii_lowercase() as usize - 'a' as usize;
         let rank = sq.chars().nth(1).unwrap().to_digit(10).unwrap() as usize - 1;
         rank * 8 + file
     }
+
+    /// Converts the square into a string
     pub fn to_string(sq: usize) -> String {
         let file = (sq % 8) as u8 + b'a';
         let rank = (sq / 8) as u8 + b'1';

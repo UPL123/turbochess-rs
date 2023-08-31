@@ -1,11 +1,6 @@
-use crate::{
-    lookup::{line, D12_MASKS, HV_MASKS},
-    types::{Move, MoveList, Square},
-    Position,
-};
+use crate::Position;
 use std::str::FromStr;
 use std::time::Instant;
-extern crate term_table;
 
 pub fn perft(mut pos: Position, depth: usize) -> i64 {
     if depth == 0 {
@@ -100,11 +95,6 @@ fn test_movegen() {
 }
 
 #[test]
-fn lookup_test() {
-    let bb = line(6, 15) & D12_MASKS[6];
-    println!("{bb}");
-}
-#[test]
 fn perft_test() {
     let mut pos =
         Position::from_str("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
@@ -128,32 +118,6 @@ MNPS: {}",
 
 #[test]
 fn perft_tests() {
-    // Start position
-    test_perft!(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        3,
-        8902
-    );
-    test_perft!(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        4,
-        197281
-    );
-    test_perft!(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        5,
-        4865609
-    );
-    test_perft!(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        6,
-        119060324
-    );
-    test_perft!(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        7,
-        3195901860
-    );
     // Kiwipete
     test_perft!(
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",

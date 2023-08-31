@@ -1,10 +1,12 @@
 //! TurboChess library
 //!
-//! TurboChess is a fast move generator for chess that is situablle for use in a chess engine. It supports:
+//! TurboChess is a move generator for chess. It supports:
 //!
-//! * Magic or PEXT bitboards
+//!
+//! * PEXT bitboards (emulated)
 //! * Make and Undo Position
-//! * Easy and powerful
+//! * Zobrist hashing
+//! * FEN support
 //!
 //! To get started, create a new [Position] and now you can work with legal moves
 //!
@@ -18,12 +20,12 @@
 //!     println!("{mv}"); // Prints the move in the UCI format
 //! }
 //!
-//! println!("Legal count: {}", legals.len());
+//! println!("Legal count: {}", legals.count());
 //! ```
 //!
 
-pub mod lookup;
-pub mod testing;
+mod lookup;
+mod testing;
 pub mod types;
 
 use std::{fmt, str::FromStr};
@@ -37,6 +39,7 @@ use types::{BitBoard, Color, Move, MoveList, Piece, Square};
 
 use crate::types::{BitHelpers, Direction};
 
+/// Represents the state of the game
 #[derive(Debug, Clone, Copy)]
 pub struct State {
     pub turn: usize,
@@ -64,6 +67,7 @@ impl State {
     pub const LONG: [u8; 2] = [Self::WHITE_000, Self::BLACK_000];
     pub const LONG_KING_TARGET: [usize; 2] = [Square::C1, Square::C8];
     pub const LONG_ROOK: [usize; 2] = [Square::A1, Square::A8];
+    /// Creates an empty state
     pub fn new() -> Self {
         Self {
             turn: 0,
@@ -74,26 +78,37 @@ impl State {
             fm: 0,
         }
     }
+    /// Checks if you can castle one side
     pub fn can_castle(self, side: u8) -> bool {
         self.castling & side != 0
     }
 }
 
+/// Represents a position
 #[derive(Debug, Clone, Copy)]
 pub struct Position {
     ply: usize,
     pieces_bb: [[u64; 6]; 2],
     history: [State; 216],
     hash: u64,
+    pin_hv: u64,
+    pin_d12: u64,
+    danger: u64,
+    checkmask: u64,
 }
 
 impl Position {
+    /// Creates a new position
     pub fn new() -> Self {
         Self {
             ply: 0,
             pieces_bb: [[0; 6]; 2],
             history: [State::new(); 216],
             hash: 0,
+            pin_hv: 0,
+            pin_d12: 0,
+            danger: 0,
+            checkmask: 0,
         }
     }
     /// Moves a piece from a square to another.
@@ -109,6 +124,14 @@ impl Position {
         self.unset_square(square);
         self.pieces_bb[color][piece] |= 1u64 << square;
         self.hash ^= ZOBRIST_PIECES[color][piece][square];
+    }
+    /// Updates the checkmask and pinned mask
+    pub fn update_checks(&mut self) {
+        let (c, hv, d12) = self.check_and_pin();
+        self.checkmask = c;
+        self.pin_hv = hv;
+        self.pin_d12 = d12;
+        self.danger = self.attacks();
     }
     /// Unsets a square
     pub fn unset_square(&mut self, square: usize) {
@@ -174,10 +197,14 @@ impl Position {
         self.history[self.ply]
     }
     /// Gets a bitboard of all the pieces of a specific color and type
+
+    #[inline(always)]
     pub fn bb_of(&self, color: usize, piece: usize) -> u64 {
         self.pieces_bb[color][piece]
     }
     /// Gets a bitboard of all the pieces of a specific type
+
+    #[inline(always)]
     pub fn pieces(&self, piece: usize) -> u64 {
         let mut bb = 0u64;
         for c in [0, 1] {
@@ -186,6 +213,8 @@ impl Position {
         bb
     }
     /// Gets a bitboard of all the pieces of a specific color
+
+    #[inline(always)]
     pub fn colors(&self, color: usize) -> u64 {
         let mut bb = 0u64;
         for p in 0..6 {
@@ -194,18 +223,26 @@ impl Position {
         bb
     }
     /// Returns the square of the king of a certain color
+
+    #[inline(always)]
     pub fn king(&self, color: usize) -> usize {
         self.pieces_bb[color][Piece::KING].bit_scan()
     }
     /// All sliding pieces that can move horizontally and vertically
+
+    #[inline(always)]
     pub fn hv_sliders(&self, color: usize) -> u64 {
         self.bb_of(color, Piece::ROOK) | self.bb_of(color, Piece::QUEEN)
     }
     /// All sliding pieces that can move diagonally
+
+    #[inline(always)]
     pub fn d12_sliders(&self, color: usize) -> u64 {
         self.bb_of(color, Piece::BISHOP) | self.bb_of(color, Piece::QUEEN)
     }
     /// Makes a move without checking its legability
+
+    #[inline(always)]
     pub fn make_move(&mut self, mv: Move) {
         let state = self.actual_state();
         self.ply += 1;
@@ -460,8 +497,11 @@ impl Position {
         } else {
             self.history[self.ply].hm += 1
         }
+        self.update_checks();
     }
     /// Undoes a move
+
+    #[inline(always)]
     pub fn undo_move(&mut self, mv: Move) {
         // Replace the actual state
         let state = self.actual_state();
@@ -513,8 +553,12 @@ impl Position {
                 unreachable!("Invalid move flag")
             }
         }
+
+        self.update_checks();
     }
     /// Gets the FEN notation of the current position
+
+    #[inline(always)]
     pub fn fen(&self) -> String {
         let state = self.actual_state();
         let mut pieces = String::new();
@@ -573,6 +617,7 @@ impl Position {
         )
     }
     /// Gets all the opponent attackers from a square
+    #[inline(always)]
     pub fn attackers_from(&self, s: usize, color: usize, occ: u64) -> u64 {
         (PAWN_ATTACKS[1 - color][s] & self.pieces_bb[color][Piece::PAWN])
             | (KNIGHT_MASK[s]) & self.pieces_bb[color][Piece::KNIGHT]
@@ -580,10 +625,22 @@ impl Position {
             | (hv_moves(s, occ)) & self.hv_sliders(color)
     }
     /// Gets the occupancy of the board
+    #[inline(always)]
     pub fn occupancy(&self) -> u64 {
         self.colors(Color::WHITE) | self.colors(Color::BLACK)
     }
+    /// Gets the mask where you can move
+    #[inline(always)]
+    pub fn checkmask(&self) -> u64 {
+        self.checkmask
+    }
+    /// Gets the mask with all pinned pieces
+    #[inline(always)]
+    pub fn pinned(&self) -> u64 {
+        self.pin_d12 | self.pin_hv
+    }
     /// Gets all the attacked squares from the opponent
+    #[inline(always)]
     pub fn attacks(&self) -> u64 {
         let mut attacks = 0;
         let state = self.actual_state();
@@ -633,7 +690,7 @@ impl Position {
         attacks
     }
     /// Calculates the checks and pins at the same time
-    pub fn check_and_pin(&self) -> (u64, u64, u64) {
+    fn check_and_pin(&self) -> (u64, u64, u64) {
         let mut checkmask = 0u64;
         let mut check_count = 0;
         let mut pin_hv = 0u64;
@@ -735,11 +792,12 @@ impl Position {
         (checkmask, pin_hv, pin_d12)
     }
     /// Check if the actual player is on check
-    pub fn in_check(&mut self) -> bool {
-        let (checkmask, pin_hv, pin_d12) = self.check_and_pin();
-        checkmask != u64::MAX
+    #[inline(always)]
+    pub fn in_check(&self) -> bool {
+        self.checkmask != u64::MAX
     }
     /// Calculates all the legal moves in the position
+    #[inline(always)]
     pub fn legal(&self) -> MoveList {
         let mut list = MoveList::new();
         let state = self.actual_state();
@@ -747,10 +805,8 @@ impl Position {
 
         // Useful bitboards
         let occ = self.occupancy();
-        let our = self.colors(state.turn);
         let en = self.colors(1 - state.turn);
         let em = !occ;
-        let danger = self.attacks();
 
         // General use bitboards
         let mut s = 0usize;
@@ -759,137 +815,347 @@ impl Position {
         let mut b3 = 0u64;
 
         // Generate king moves first
-        b1 = KING_MASK[o_king] & !danger;
+        b1 = KING_MASK[o_king] & !self.danger;
         list.extend(o_king, b1 & en, Move::CAPTURE);
         list.extend(o_king, b1 & em, Move::QUIET);
 
-        // Calculate checks and pins
-        let (checkmask, pin_hv, pin_d12) = self.check_and_pin();
-        let pinned = pin_hv | pin_d12;
-
         // Quick check: If is a double check, only return king moves
-        if checkmask == 0 {
+        if self.checkmask == 0 {
             return list;
         }
+
+        let pinned = self.pin_hv | self.pin_d12;
 
         // Knight moves
         b1 = self.pieces_bb[state.turn][Piece::KNIGHT] & !pinned;
         while b1 != 0 {
             s = b1.bit_scan();
-            list.extend(s, KNIGHT_MASK[s] & checkmask & en, Move::CAPTURE);
-            list.extend(s, KNIGHT_MASK[s] & checkmask & em, Move::QUIET);
+            list.extend(s, KNIGHT_MASK[s] & self.checkmask & en, Move::CAPTURE);
+            list.extend(s, KNIGHT_MASK[s] & self.checkmask & em, Move::QUIET);
             b1 = b1.pop_lsb();
         }
 
         // HV moves that are pinned horizontally
-        b1 = self.hv_sliders(state.turn) & !pin_d12 & pin_hv;
-        while b1 != 0 {
-            s = b1.bit_scan();
-            list.extend(s, hv_moves(s, occ) & checkmask & pin_hv & en, Move::CAPTURE);
-            list.extend(s, hv_moves(s, occ) & checkmask & pin_hv & em, Move::QUIET);
-            b1 = b1.pop_lsb();
-        }
-
-        // HV moves that aren't pinned horizontally
-        b1 = self.hv_sliders(state.turn) & !pin_d12 & !pin_hv;
-        while b1 != 0 {
-            s = b1.bit_scan();
-
-            list.extend(s, hv_moves(s, occ) & checkmask & en, Move::CAPTURE);
-            list.extend(s, hv_moves(s, occ) & checkmask & em, Move::QUIET);
-            b1 = b1.pop_lsb();
-        }
-
-        // D12 moves that are pinned diagonally
-        b1 = self.d12_sliders(state.turn) & !pin_hv & pin_d12;
+        b1 = self.hv_sliders(state.turn) & !self.pin_d12 & self.pin_hv;
         while b1 != 0 {
             s = b1.bit_scan();
             list.extend(
                 s,
-                d12_moves(s, occ) & checkmask & pin_d12 & en,
+                hv_moves(s, occ) & self.checkmask & self.pin_hv & en,
                 Move::CAPTURE,
             );
-            list.extend(s, d12_moves(s, occ) & checkmask & pin_d12 & em, Move::QUIET);
+            list.extend(
+                s,
+                hv_moves(s, occ) & self.checkmask & self.pin_hv & em,
+                Move::QUIET,
+            );
+            b1 = b1.pop_lsb();
+        }
+
+        // HV moves that aren't pinned horizontally
+        b1 = self.hv_sliders(state.turn) & !self.pin_d12 & !self.pin_hv;
+        while b1 != 0 {
+            s = b1.bit_scan();
+
+            list.extend(s, hv_moves(s, occ) & self.checkmask & en, Move::CAPTURE);
+            list.extend(s, hv_moves(s, occ) & self.checkmask & em, Move::QUIET);
+            b1 = b1.pop_lsb();
+        }
+
+        // D12 moves that are pinned diagonally
+        b1 = self.d12_sliders(state.turn) & !self.pin_hv & self.pin_d12;
+        while b1 != 0 {
+            s = b1.bit_scan();
+            list.extend(
+                s,
+                d12_moves(s, occ) & self.checkmask & self.pin_d12 & en,
+                Move::CAPTURE,
+            );
+            list.extend(
+                s,
+                d12_moves(s, occ) & self.checkmask & self.pin_d12 & em,
+                Move::QUIET,
+            );
             b1 = b1.pop_lsb();
         }
 
         // D12 moves that aren't pinned diagonally
-        b1 = self.d12_sliders(state.turn) & !pin_hv & !pin_d12;
+        b1 = self.d12_sliders(state.turn) & !self.pin_hv & !self.pin_d12;
         while b1 != 0 {
             s = b1.bit_scan();
 
-            list.extend(s, d12_moves(s, occ) & checkmask & en, Move::CAPTURE);
-            list.extend(s, d12_moves(s, occ) & checkmask & em, Move::QUIET);
+            list.extend(s, d12_moves(s, occ) & self.checkmask & en, Move::CAPTURE);
+            list.extend(s, d12_moves(s, occ) & self.checkmask & em, Move::QUIET);
             b1 = b1.pop_lsb();
         }
 
-        // Pawns that aren't pinned diagonally
-        b1 = self.pieces_bb[state.turn][Piece::PAWN] & !pin_d12;
-        while b1 != 0 {
-            s = b1.bit_scan();
-            b2 = if pin_hv & b1.get_lsb() != 0 {
-                BitBoard::shift_dir(
-                    b1.get_lsb(),
-                    Direction::relative(Direction::North, state.turn),
-                ) & !occ
-                    & pin_hv
-            } else {
-                BitBoard::shift_dir(
-                    b1.get_lsb(),
-                    Direction::relative(Direction::North, state.turn),
-                ) & !occ
-            };
-            if b2 != 0 {
-                // If is going to promote
-                if b2 & BitBoard::relative_rank(8, state.turn) != 0 {
-                    list.extend_promotions(s, b2 & checkmask, false);
-                } else {
-                    list.extend(s, b2 & checkmask, Move::QUIET);
-                    if b1.get_lsb() & BitBoard::relative_rank(2, state.turn) != 0 {
-                        b3 = if pin_hv & b1.get_lsb() != 0 {
-                            BitBoard::shift_dir(
-                                b1.get_lsb(),
-                                Direction::relative(Direction::North2, state.turn),
-                            ) & !occ
-                                & pin_hv
-                        } else {
-                            BitBoard::shift_dir(
-                                b1.get_lsb(),
-                                Direction::relative(Direction::North2, state.turn),
-                            ) & !occ
-                        };
-                        if b3 != 0 {
-                            list.extend(s, b3 & checkmask, Move::DOUBLE_PUSH)
-                        }
-                    }
-                }
-            }
-            b1 = b1.pop_lsb();
+        // Pawn pushes
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !pinned,
+            Direction::relative(Direction::North, state.turn),
+        ) & em;
+        b2 = b1 & !BitBoard::relative_rank(8, state.turn) & self.checkmask;
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::South, state.turn))
+                    .bit_scan(),
+                s,
+                Move::QUIET,
+            );
+            b2 = b2.pop_lsb();
         }
-        // Pawns that aren't pinned orthogonally
-        b1 = self.pieces_bb[state.turn][Piece::PAWN] & !pin_hv;
-        while b1 != 0 {
-            s = b1.bit_scan();
-            b2 = if pin_d12 & b1.get_lsb() != 0 {
-                PAWN_ATTACKS[state.turn][s] & en & pin_d12
-            } else {
-                PAWN_ATTACKS[state.turn][s] & en
-            };
-            if b2 & BitBoard::relative_rank(8, state.turn) != 0 {
-                list.extend_promotions(s, b2 & checkmask, true);
-            } else {
-                list.extend(s, b2 & checkmask, Move::CAPTURE);
-            }
-            if let Some(ep) = state.ep {
-                b2 = PAWN_ATTACKS[state.turn][s] & (1u64 << ep);
-                // If pinned diagonally and the result is over the pinmask
-                if pin_d12 & b1.get_lsb() != 0 {
-                    list.extend(s, b2 & pin_d12 & checkmask, Move::EN_PASSANT);
+
+        // Push Promotions
+        b2 = b1 & BitBoard::relative_rank(8, state.turn) & self.checkmask;
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add_promotions(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::South, state.turn))
+                    .bit_scan(),
+                s,
+                false,
+            );
+            b2 = b2.pop_lsb();
+        }
+
+        // Double pushes
+        b2 = BitBoard::shift_dir(b1, Direction::relative(Direction::North, state.turn))
+            & em
+            & BitBoard::relative_rank(4, state.turn)
+            & self.checkmask;
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::South2, state.turn))
+                    .bit_scan(),
+                s,
+                Move::DOUBLE_PUSH,
+            );
+            b2 = b2.pop_lsb();
+        }
+
+        // Pawn pushes (Pin HV)
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !self.pin_d12 & self.pin_hv,
+            Direction::relative(Direction::North, state.turn),
+        ) & em
+            & self.pin_hv
+            & self.checkmask;
+        b2 = b1;
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::South, state.turn))
+                    .bit_scan(),
+                s,
+                Move::QUIET,
+            );
+            b2 = b2.pop_lsb();
+        }
+
+        // Double pushes (Pin HV)
+        b2 = BitBoard::shift_dir(b1, Direction::relative(Direction::North, state.turn))
+            & em
+            & self.pin_hv
+            & BitBoard::relative_rank(4, state.turn)
+            & self.checkmask;
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::South2, state.turn))
+                    .bit_scan(),
+                s,
+                Move::DOUBLE_PUSH,
+            );
+            b2 = b2.pop_lsb();
+        }
+        /*
+               // Pawns that aren't pinned orthogonally
+               b1 = self.pieces_bb[state.turn][Piece::PAWN] & !self.pin_hv;
+               while b1 != 0 {
+                   s = b1.bit_scan();
+                   b2 = if self.pin_d12 & b1.get_lsb() != 0 {
+                       PAWN_ATTACKS[state.turn][s] & en & self.pin_d12
+                   } else {
+                       PAWN_ATTACKS[state.turn][s] & en
+                   };
+                   if b2 & BitBoard::relative_rank(8, state.turn) != 0 {
+                       list.extend_promotions(s, b2 & self.checkmask, true);
+                   } else {
+                       list.extend(s, b2 & self.checkmask, Move::CAPTURE);
+                   }
+                   if let Some(ep) = state.ep {
+                       b2 = PAWN_ATTACKS[state.turn][s] & (1u64 << ep);
+                       // If pinned diagonally and the result is over the pinmask
+                       if self.pin_d12 & b1.get_lsb() != 0 {
+                           list.extend(s, b2 & self.pin_d12 & self.checkmask, Move::EN_PASSANT);
+                       } else {
+                           // If the en passant ocurrs on the same rank as the king and there is a HV on the same rank, then its ilegal
+                           b3 = self.hv_sliders(1 - state.turn) & BitBoard::RANK_1 << (o_king / 8 * 8);
+                           if b3 == 0 {
+                               if self.checkmask
+                                   == BitBoard::shift_dir(
+                                       1u64 << ep,
+                                       Direction::relative(Direction::South, state.turn),
+                                   )
+                               {
+                                   list.extend(s, b2, Move::EN_PASSANT);
+                               } else {
+                                   list.extend(s, b2 & self.checkmask, Move::EN_PASSANT);
+                               }
+                           } else {
+                               while b3 != 0 {
+                                   if between(b3.bit_scan(), o_king) & occ
+                                       != (1u64 << s)
+                                           | BitBoard::shift_dir(
+                                               1u64 << ep,
+                                               Direction::relative(Direction::South, state.turn),
+                                           )
+                                   {
+                                       list.extend(s, b2 & self.checkmask, Move::EN_PASSANT);
+                                   }
+                                   b3 = b3.pop_lsb();
+                               }
+                           }
+                       }
+                   }
+
+                   b1 = b1.pop_lsb();
+               }
+        */
+        // Left captures
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !pinned,
+            Direction::relative(Direction::NorthEast, state.turn),
+        ) & en
+            & self.checkmask;
+        b2 = b1 & !BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthWest, state.turn))
+                    .bit_scan(),
+                s,
+                Move::CAPTURE,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Left capture promotions
+        b2 = b1 & BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add_promotions(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthWest, state.turn))
+                    .bit_scan(),
+                s,
+                true,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Right captures
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !pinned,
+            Direction::relative(Direction::NorthWest, state.turn),
+        ) & en
+            & self.checkmask;
+        b2 = b1 & !BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthEast, state.turn))
+                    .bit_scan(),
+                s,
+                Move::CAPTURE,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Right capture promotions
+        b2 = b1 & BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add_promotions(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthEast, state.turn))
+                    .bit_scan(),
+                s,
+                true,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Left captures (Pin D12)
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !self.pin_hv & self.pin_d12,
+            Direction::relative(Direction::NorthEast, state.turn),
+        ) & en
+            & self.pin_d12;
+        b2 = b1 & !BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthWest, state.turn))
+                    .bit_scan(),
+                s,
+                Move::CAPTURE,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Left capture promotions (Pin D12)
+        b2 = b1 & BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add_promotions(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthWest, state.turn))
+                    .bit_scan(),
+                s,
+                true,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Right captures (Pin D12)
+        b1 = BitBoard::shift_dir(
+            self.pieces_bb[state.turn][Piece::PAWN] & !self.pin_hv & self.pin_d12,
+            Direction::relative(Direction::NorthWest, state.turn),
+        ) & en
+            & self.pin_d12;
+        b2 = b1 & !BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthEast, state.turn))
+                    .bit_scan(),
+                s,
+                Move::CAPTURE,
+            );
+            b2 = b2.pop_lsb();
+        }
+        // Right capture promotions (Pin D12)
+        b2 = b1 & BitBoard::relative_rank(8, state.turn);
+        while b2 != 0 {
+            s = b2.bit_scan();
+            list.add_promotions(
+                BitBoard::shift_dir(b2, Direction::relative(Direction::SouthEast, state.turn))
+                    .bit_scan(),
+                s,
+                true,
+            );
+            b2 = b2.pop_lsb();
+        }
+
+        // En passant
+        if let Some(ep) = state.ep {
+            b1 = PAWN_ATTACKS[1 - state.turn][ep]
+                & self.pieces_bb[state.turn][Piece::PAWN]
+                & !self.pin_hv;
+            while b1 != 0 {
+                b2 = 1u64 << ep;
+                // Check if pawn can en passant
+                if self.pin_d12 & b1.get_lsb() != 0 {
+                    list.extend(s, b2 & self.pin_d12 & self.checkmask, Move::EN_PASSANT);
                 } else {
                     // If the en passant ocurrs on the same rank as the king and there is a HV on the same rank, then its ilegal
                     b3 = self.hv_sliders(1 - state.turn) & BitBoard::RANK_1 << (o_king / 8 * 8);
                     if b3 == 0 {
-                        if checkmask
+                        if self.checkmask
                             == BitBoard::shift_dir(
                                 1u64 << ep,
                                 Direction::relative(Direction::South, state.turn),
@@ -897,7 +1163,7 @@ impl Position {
                         {
                             list.extend(s, b2, Move::EN_PASSANT);
                         } else {
-                            list.extend(s, b2 & checkmask, Move::EN_PASSANT);
+                            list.extend(s, b2 & self.checkmask, Move::EN_PASSANT);
                         }
                     } else {
                         while b3 != 0 {
@@ -908,31 +1174,29 @@ impl Position {
                                         Direction::relative(Direction::South, state.turn),
                                     )
                             {
-                                list.extend(s, b2 & checkmask, Move::EN_PASSANT);
+                                list.extend(s, b2 & self.checkmask, Move::EN_PASSANT);
                             }
                             b3 = b3.pop_lsb();
                         }
                     }
                 }
             }
-
-            b1 = b1.pop_lsb();
         }
 
         // Castling is only allowed when:
         // 1. We are not in check
         // 2. The castling area isn't under attack
         // 3. The king and the rook haven't moved
-        if checkmask == u64::MAX {
+        if self.checkmask == u64::MAX {
             if state.can_castle(State::SHORT[state.turn]) {
                 b1 = oo_blockers(state.turn);
-                if b1 & !danger & !occ == b1 {
+                if b1 & !self.danger & !occ == b1 {
                     list.add(o_king, State::SHORT_TARGET[state.turn], Move::CASTLE_00)
                 }
             }
             if state.can_castle(State::LONG[state.turn]) {
                 b1 = ooo_blockers(state.turn);
-                if b1 & (!danger | ooo_danger(state.turn)) & !occ == b1 {
+                if b1 & (!self.danger | ooo_danger(state.turn)) & !occ == b1 {
                     list.add(
                         o_king,
                         State::LONG_KING_TARGET[state.turn],
@@ -1026,6 +1290,12 @@ impl FromStr for Position {
         if params[5] != "-" {
             pos.history[pos.ply].fm = params[5].parse::<usize>().unwrap()
         }
+
+        let (c, hv, d12) = pos.check_and_pin();
+        pos.checkmask = c;
+        pos.pin_hv = hv;
+        pos.pin_d12 = d12;
+        pos.danger = pos.attacks();
 
         Ok(pos)
     }
